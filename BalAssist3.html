@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Balance Assist</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        #chart-container {
+          width: 100%;
+          height: 400px;
+        }
+        input {
+          background-color: #2C3539 !important;
+          color: #D3D7D9 !important;
+          border: 1px solid #38444D !important;
+        }
+        input:focus {
+          outline: none !important;
+          border-color: #1DA1F2 !important;
+          box-shadow: 0 0 0 1px #1DA1F2 !important;
+        }
+        canvas {
+          background-color: transparent !important;
+        }
+    </style>
+</head>
+<body class="bg-[#14171A] p-4">
+<div class="max-w-md mx-auto bg-[#1C2526] p-6 rounded-lg shadow-md">
+
+    <!-- Inputs -->
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div class="col-span-2">
+            <label class="block text-sm font-medium text-[#D3D7D9] mb-1">Select Product</label>
+            <select id="productSelect" class="block w-full rounded-md shadow-sm bg-[#2C3539] text-[#D3D7D9]" onchange="setProductDefaults()">
+                <option value="">-- Select Product --</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[#D3D7D9]">Max Force Allowed (g·mm)</label>
+            <input type="number" id="maxForceInput" step="0.1" min="0" class="mt-1 block w-full rounded-md shadow-sm">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[#D3D7D9]">Correction Radius (mm)</label>
+            <input type="number" id="radiusInput" step="0.1" min="0" class="mt-1 block w-full rounded-md shadow-sm">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[#D3D7D9]">Force (g·mm)</label>
+            <input type="number" id="forceInput" step="0.1" min="0" class="mt-1 block w-full rounded-md shadow-sm">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-[#D3D7D9]">Angle (degrees)</label>
+            <input type="number" id="angleInput" step="0.1" min="0" max="360" class="mt-1 block w-full rounded-md shadow-sm">
+        </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="grid grid-cols-2 gap-2 mb-4">
+        <button onclick="addMeasurement()" class="bg-[#1DA1F2] text-[#D3D7D9] py-2 px-4 rounded-md hover:bg-[#1991DA]">Add Measurement</button>
+        <button onclick="clearAll()" class="bg-[#F4212E] text-[#D3D7D9] py-2 px-4 rounded-md hover:bg-[#D61A24]">Clear All</button>
+    </div>
+	
+	 <!-- Correction Info -->
+    <div class="mt-4 text-center">
+        <p class="text-lg text-[#D3D7D9]">Correction Angle: <span id="correctionAngle">N/A</span>° — Turns: <span id="turns">N/A</span></p>
+    </div>
+
+    <!-- Chart (moved here) -->
+    <div id="chart-container" class="mt-6">
+        <canvas id="polarChart"></canvas>
+    </div>
+
+    <!-- Measurements Table -->
+    <div class="mt-6">
+        <h2 class="text-lg font-semibold text-[#D3D7D9]">Measurements</h2>
+        <table id="measurementsTable" class="w-full mt-2 text-sm">
+            <thead>
+            <tr class="bg-[#38444D]">
+                <th class="py-2 px-4 text-[#D3D7D9]">Force</th>
+                <th class="py-2 px-4 text-[#D3D7D9]">Angle</th>
+                <th class="py-2 px-4 text-[#D3D7D9]">Action</th>
+            </tr>
+            </thead>
+            <tbody id="measurementsBody"></tbody>
+        </table>
+    </div>
+
+
+</div>
+
+<script>
+    const productSettings = {
+      "CD6": { maxForce: 35, radius: 87 },
+      "Hanon": { maxForce: 25, radius: 78 },
+      "Mazda 120W/170W": { maxForce: 25, radius: 66 },
+      "Mazda 600W": { maxForce: 25, radius: 75 },
+      "WL": { maxForce: 30, radius: 87 },
+      "BR167-600": { maxForce: 35, radius: 82 },
+      "BR167-850/1Kw": { maxForce: 35, radius: 82 },
+      "VW": { maxForce: 30, radius: 95 },
+      "31XX 400": { maxForce: 35, radius: 99 },
+      "31XX 600": { maxForce: 35, radius: 99 },
+      "JK": { maxForce: 32, radius: 80 },
+      "U38X": { maxForce: 30, radius: 80 },
+      "CD4": { maxForce: 25, radius: 54 },
+      "ENFN": { maxForce: 50, radius: 66 },
+      "Volvo": { maxForce: 25, radius: 84 },
+      "DT-BEV": { maxForce: 30, radius: 84 },
+      "LB-ICE": { maxForce: 30, radius: 80 },
+      "Zoox": { maxForce: 30, radius: 80 },
+      "U377": { maxForce: 30, radius: 80 }
+    };
+
+    let measurements = [];
+    let chart = null;
+    let correctionAngle = null;
+
+    function populateDropdown() {
+      const dropdown = document.getElementById('productSelect');
+      for (const key in productSettings) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = key;
+        dropdown.appendChild(option);
+      }
+    }
+
+    function setProductDefaults() {
+      const sel = document.getElementById('productSelect').value;
+      if (!sel) return;
+      const { maxForce, radius } = productSettings[sel];
+      document.getElementById('maxForceInput').value = maxForce;
+      document.getElementById('radiusInput').value = radius;
+      updateChart();
+    }
+
+    function addMeasurement() {
+      const f = parseFloat(document.getElementById('forceInput').value);
+      const a = parseFloat(document.getElementById('angleInput').value);
+      if (isNaN(f) || isNaN(a)) return;
+      measurements.push({ force: f, angle: a });
+      document.getElementById('forceInput').value = '';
+      document.getElementById('angleInput').value = '';
+      updateTable(); updateCorrectionAngle(); updateChart();
+    }
+
+    function deleteMeasurement(idx) {
+      measurements.splice(idx, 1); updateTable(); updateCorrectionAngle(); updateChart();
+    }
+
+    function clearAll() {
+      measurements = [];
+      correctionAngle = null;
+      document.getElementById('correctionAngle').textContent = 'N/A';
+      document.getElementById('turns').textContent = 'N/A';
+      updateTable(); updateChart();
+    }
+
+    function updateTable() {
+      const tbody = document.getElementById('measurementsBody');
+      tbody.innerHTML = '';
+      measurements.forEach((m, i) => {
+        tbody.innerHTML += `<tr class="${i % 2 === 0 ? 'bg-[#1C2526]' : 'bg-[#252D31]'}">
+          <td class="py-2 px-4 text-[#D3D7D9]">${m.force.toFixed(2)}</td>
+          <td class="py-2 px-4 text-[#D3D7D9]">${m.angle.toFixed(1)}°</td>
+          <td class="py-2 px-4"><button onclick="deleteMeasurement(${i})" class="bg-[#F4212E] text-[#D3D7D9] py-1 px-2 rounded hover:bg-[#D61A24]">Delete</button></td>
+        </tr>`;
+      });
+    }
+
+    function getClusteredMeasurements() {
+  const radius = parseFloat(document.getElementById('radiusInput').value) || 80;
+  const maxForce = parseFloat(document.getElementById('maxForceInput').value) || 35;
+  if (measurements.length === 0) return [];
+
+  const coords = measurements.map(m => {
+    const rad = m.angle * Math.PI / 180;
+    return {
+      x: m.force * Math.cos(rad),
+      y: m.force * Math.sin(rad),
+      ...m
+    };
+  });
+
+  let bestCount = 0;
+  let bestPoints = [];
+
+  const maxDistance = Math.max(...measurements.map(m => m.force));
+  const step = 10;
+  const distStep = Math.max(5, 0.1 * maxDistance); // Ensure step is not too small
+
+  for (let r = 0; r <= maxDistance; r += distStep) {
+    for (let theta = 0; theta < 360; theta += step) {
+      const rad = theta * Math.PI / 180;
+      const cx = r * Math.cos(rad);
+      const cy = r * Math.sin(rad);
+
+      const inside = coords.filter(p => Math.hypot(p.x - cx, p.y - cy) <= maxForce);
+
+      if (inside.length > bestCount) {
+        bestCount = inside.length;
+        bestPoints = inside;
+      }
+    }
+  }
+
+  return bestPoints;
+    }
+
+    function updateCorrectionAngle() {
+      const cluster = getClusteredMeasurements();
+      if (cluster.length === 0) {
+        correctionAngle = null;
+        document.getElementById('correctionAngle').textContent = 'N/A';
+        document.getElementById('turns').textContent = 'N/A';
+        return;
+      }
+
+      const sumSin = cluster.reduce((sum, m) => sum + Math.sin(m.angle * Math.PI / 180), 0);
+      const sumCos = cluster.reduce((sum, m) => sum + Math.cos(m.angle * Math.PI / 180), 0);
+      const meanAngleRad = Math.atan2(sumSin, sumCos);
+      const meanAngleDeg = (meanAngleRad * 180 / Math.PI + 360) % 360;
+      correctionAngle = (meanAngleDeg + 180) % 360;
+
+      document.getElementById('correctionAngle').textContent = correctionAngle.toFixed(1);
+
+      const avgF = cluster.reduce((sum, m) => sum + m.force, 0) / cluster.length;
+      const r = parseFloat(document.getElementById('radiusInput').value);
+      if (r > 0) {
+        const turns = (avgF / r * 1000) / 38.5;
+        document.getElementById('turns').textContent = turns.toFixed(1);
+      } else {
+        document.getElementById('turns').textContent = 'N/A';
+      }
+    }
+
+    const customPolarGrid = {
+      id: 'customPolarGrid',
+      beforeDraw(chart) {
+        const { ctx, chartArea: { width, height, left, top } } = chart;
+        const cx = left + width / 2, cy = top + height / 2, outer = Math.min(width, height) / 2;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i <= 4; i++) {
+          ctx.beginPath(); ctx.arc(cx, cy, (outer * i) / 4, 0, 2 * Math.PI); ctx.stroke();
+        }
+        for (let a = 0; a < 360; a += 45) {
+          const r = (a * Math.PI) / 180;
+          ctx.beginPath(); ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + outer * Math.cos(r), cy - outer * Math.sin(r));
+              ctx.stroke();
+
+              // Add 0° marker
+              if (a === 0) {
+                ctx.fillStyle = '#D3D7D9';
+                ctx.font = '12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('0°', cx + outer - 10, cy - 8);
+              }
+        }
+        ctx.restore();
+      }
+    };
+
+    function updateChart() {
+      const canvas = document.getElementById('polarChart'), ctx = canvas.getContext('2d');
+      if (chart) chart.destroy();
+
+      const maxForce = parseFloat(document.getElementById('maxForceInput').value) || 100;
+      const targetLimit = maxForce * 0.7;
+      const maxMeas = measurements.length ? Math.max(...measurements.map(m => m.force)) : 0;
+      const outerRadius = Math.max(maxForce * 1.2, maxMeas * 1.2, 40);
+
+      const measurementsData = measurements.map(m => {
+        const rad = m.angle * Math.PI / 180;
+        return {
+          x: m.force * Math.cos(rad),
+          y: m.force * Math.sin(rad),
+          force: m.force
+        };
+      });
+
+      const measurementColors = measurementsData.map(pt =>
+        pt.force <= targetLimit ? 'rgba(0,255,0,0.7)' :
+        pt.force <= maxForce ? 'rgba(255,255,0,0.7)' : 'rgba(255,0,0,0.7)'
+      );
+
+      const correctionRad = correctionAngle != null ? (correctionAngle * Math.PI) / 180 : 0;
+      const circlePoints = r => Array.from({ length: 100 }, (_, i) => {
+        const angle = 2 * Math.PI * i / 100;
+        return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+      });
+
+      const datasets = [
+        { label: 'Target Limit', data: circlePoints(targetLimit), showLine: true, pointRadius: 0, borderColor: 'rgba(0,255,0,0.7)', fill: false },
+        { label: 'Max Limit', data: circlePoints(maxForce), showLine: true, pointRadius: 0, borderColor: 'rgba(255,255,0,0.7)', fill: false },
+        { label: 'Measurements', data: measurementsData, backgroundColor: measurementColors, pointRadius: 5 },
+        ...(correctionAngle != null ? [{
+          label: 'Correction Angle',
+          data: [
+            { x: 0, y: 0 },
+            { x: outerRadius * Math.cos(correctionRad), y: outerRadius * Math.sin(correctionRad) }
+          ],
+          borderColor: '#1DA1F2',
+          borderWidth: 2,
+          fill: false,
+          showLine: true,
+          pointRadius: 0
+        }] : [])
+      ];
+
+      chart = new Chart(ctx, {
+        type: 'scatter',
+        data: { datasets },
+        options: {
+          plugins: {
+            legend: { display: false },
+            customPolarGrid
+          },
+          aspectRatio: 1,
+          scales: {
+            x: { min: -outerRadius, max: outerRadius, grid: { display: false }, ticks: { display: false } },
+            y: { min: -outerRadius, max: outerRadius, grid: { display: false }, ticks: { display: false } }
+          }
+        },
+        plugins: [customPolarGrid]
+      });
+    }
+
+    populateDropdown();
+</script>
+</body>
+</html>
