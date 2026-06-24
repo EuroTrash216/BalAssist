@@ -60,13 +60,13 @@
         <button onclick="addMeasurement()" class="bg-[#1DA1F2] text-[#D3D7D9] py-2 px-4 rounded-md hover:bg-[#1991DA]">Add Measurement</button>
         <button onclick="clearAll()" class="bg-[#F4212E] text-[#D3D7D9] py-2 px-4 rounded-md hover:bg-[#D61A24]">Clear All</button>
     </div>
-	
-	 <!-- Correction Info -->
+
+    <!-- Correction Info -->
     <div class="mt-4 text-center">
         <p class="text-lg text-[#D3D7D9]">Correction Angle: <span id="correctionAngle">N/A</span>° — Turns: <span id="turns">N/A</span></p>
     </div>
 
-    <!-- Chart (moved here) -->
+    <!-- Chart -->
     <div id="chart-container" class="mt-6">
         <canvas id="polarChart"></canvas>
     </div>
@@ -85,7 +85,6 @@
             <tbody id="measurementsBody"></tbody>
         </table>
     </div>
-
 
 </div>
 
@@ -109,12 +108,19 @@
       "DT-BEV": { maxForce: 30, radius: 84 },
       "LB-ICE": { maxForce: 30, radius: 80 },
       "Zoox": { maxForce: 30, radius: 80 },
-      "U377": { maxForce: 30, radius: 80 }
+      "U377": { maxForce: 30, radius: 80 },
+      "OM656": { maxForce: 35, radius: 82, rotation: 'ccw' }
     };
 
     let measurements = [];
     let chart = null;
     let correctionAngle = null;
+    let currentRotation = 'cw';   // 'cw' or 'ccw'
+
+    // ── Helper: convert a CCW balancer angle to our internal CW space ──
+    function toEffectiveAngle(angle) {
+      return currentRotation === 'ccw' ? (360 - angle) % 360 : angle;
+    }
 
     function populateDropdown() {
       const dropdown = document.getElementById('productSelect');
@@ -129,9 +135,13 @@
     function setProductDefaults() {
       const sel = document.getElementById('productSelect').value;
       if (!sel) return;
-      const { maxForce, radius } = productSettings[sel];
-      document.getElementById('maxForceInput').value = maxForce;
-      document.getElementById('radiusInput').value = radius;
+      const settings = productSettings[sel];
+      document.getElementById('maxForceInput').value = settings.maxForce;
+      document.getElementById('radiusInput').value = settings.radius;
+      // Set rotation direction
+      currentRotation = settings.rotation || 'cw';
+      // Recalculate everything immediately
+      updateCorrectionAngle();
       updateChart();
     }
 
@@ -170,42 +180,47 @@
     }
 
     function getClusteredMeasurements() {
-  const radius = parseFloat(document.getElementById('radiusInput').value) || 80;
-  const maxForce = parseFloat(document.getElementById('maxForceInput').value) || 35;
-  if (measurements.length === 0) return [];
+      const radius = parseFloat(document.getElementById('radiusInput').value) || 80;
+      const maxForce = parseFloat(document.getElementById('maxForceInput').value) || 35;
+      if (measurements.length === 0) return [];
 
-  const coords = measurements.map(m => {
-    const rad = m.angle * Math.PI / 180;
-    return {
-      x: m.force * Math.cos(rad),
-      y: m.force * Math.sin(rad),
-      ...m
-    };
-  });
+      // Convert to Cartesian using the EFFECTIVE (CW) angle
+      const coords = measurements.map(m => {
+        const effectiveAngle = toEffectiveAngle(m.angle);
+        const rad = effectiveAngle * Math.PI / 180;
+        return {
+          x: m.force * Math.cos(rad),
+          y: m.force * Math.sin(rad),
+          force: m.force,
+          originalAngle: m.angle,
+          effectiveAngle: effectiveAngle
+        };
+      });
 
-  let bestCount = 0;
-  let bestPoints = [];
+      let bestCount = 0;
+      let bestPoints = [];
 
-  const maxDistance = Math.max(...measurements.map(m => m.force));
-  const step = 10;
-  const distStep = Math.max(5, 0.1 * maxDistance); // Ensure step is not too small
+      const maxDistance = Math.max(...measurements.map(m => m.force));
+      const step = 10;
+      const distStep = Math.max(5, 0.1 * maxDistance);
 
-  for (let r = 0; r <= maxDistance; r += distStep) {
-    for (let theta = 0; theta < 360; theta += step) {
-      const rad = theta * Math.PI / 180;
-      const cx = r * Math.cos(rad);
-      const cy = r * Math.sin(rad);
+      // Angle loops still in CW space — that's fine, the search grid is symmetric
+      for (let r = 0; r <= maxDistance; r += distStep) {
+        for (let theta = 0; theta < 360; theta += step) {
+          const rad = theta * Math.PI / 180;
+          const cx = r * Math.cos(rad);
+          const cy = r * Math.sin(rad);
 
-      const inside = coords.filter(p => Math.hypot(p.x - cx, p.y - cy) <= maxForce);
+          const inside = coords.filter(p => Math.hypot(p.x - cx, p.y - cy) <= maxForce);
 
-      if (inside.length > bestCount) {
-        bestCount = inside.length;
-        bestPoints = inside;
+          if (inside.length > bestCount) {
+            bestCount = inside.length;
+            bestPoints = inside;
+          }
+        }
       }
-    }
-  }
 
-  return bestPoints;
+      return bestPoints;
     }
 
     function updateCorrectionAngle() {
@@ -217,15 +232,24 @@
         return;
       }
 
-      const sumSin = cluster.reduce((sum, m) => sum + Math.sin(m.angle * Math.PI / 180), 0);
-      const sumCos = cluster.reduce((sum, m) => sum + Math.cos(m.angle * Math.PI / 180), 0);
+      // Cluster points already have effectiveAngle (CW) from getClusteredMeasurements
+      // But just in case, use toEffectiveAngle on the original
+      const sumSin = cluster.reduce((sum, p) => sum + Math.sin(p.effectiveAngle * Math.PI / 180), 0);
+      const sumCos = cluster.reduce((sum, p) => sum + Math.cos(p.effectiveAngle * Math.PI / 180), 0);
       const meanAngleRad = Math.atan2(sumSin, sumCos);
       const meanAngleDeg = (meanAngleRad * 180 / Math.PI + 360) % 360;
-      correctionAngle = (meanAngleDeg + 180) % 360;
+
+      // Correction is opposite direction (CW space)
+      const rawCorrectionCW = (meanAngleDeg + 180) % 360;
+
+      // Convert to display space (CCW if needed)
+      correctionAngle = currentRotation === 'ccw'
+        ? (360 - rawCorrectionCW) % 360
+        : rawCorrectionCW;
 
       document.getElementById('correctionAngle').textContent = correctionAngle.toFixed(1);
 
-      const avgF = cluster.reduce((sum, m) => sum + m.force, 0) / cluster.length;
+      const avgF = cluster.reduce((sum, p) => sum + p.force, 0) / cluster.length;
       const r = parseFloat(document.getElementById('radiusInput').value);
       if (r > 0) {
         const turns = (avgF / r * 1000) / 38.5;
@@ -235,6 +259,7 @@
       }
     }
 
+    // ── Chart plugin ──
     const customPolarGrid = {
       id: 'customPolarGrid',
       beforeDraw(chart) {
@@ -250,15 +275,14 @@
           const r = (a * Math.PI) / 180;
           ctx.beginPath(); ctx.moveTo(cx, cy);
           ctx.lineTo(cx + outer * Math.cos(r), cy - outer * Math.sin(r));
-              ctx.stroke();
+          ctx.stroke();
 
-              // Add 0° marker
-              if (a === 0) {
-                ctx.fillStyle = '#D3D7D9';
-                ctx.font = '12px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('0°', cx + outer - 10, cy - 8);
-              }
+          if (a === 0) {
+            ctx.fillStyle = '#D3D7D9';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('0°', cx + outer - 10, cy - 8);
+          }
         }
         ctx.restore();
       }
@@ -273,8 +297,10 @@
       const maxMeas = measurements.length ? Math.max(...measurements.map(m => m.force)) : 0;
       const outerRadius = Math.max(maxForce * 1.2, maxMeas * 1.2, 40);
 
+      // Plot using effective (CW) angles
       const measurementsData = measurements.map(m => {
-        const rad = m.angle * Math.PI / 180;
+        const effectiveAngle = toEffectiveAngle(m.angle);
+        const rad = effectiveAngle * Math.PI / 180;
         return {
           x: m.force * Math.cos(rad),
           y: m.force * Math.sin(rad),
@@ -287,7 +313,12 @@
         pt.force <= maxForce ? 'rgba(255,255,0,0.7)' : 'rgba(255,0,0,0.7)'
       );
 
-      const correctionRad = correctionAngle != null ? (correctionAngle * Math.PI) / 180 : 0;
+      // Correction line uses the CW-space angle for plotting
+      const displayCorrectionCW = currentRotation === 'ccw'
+        ? (360 - correctionAngle) % 360   // convert display CCW → CW for the line
+        : correctionAngle;
+      const correctionRad = correctionAngle != null ? (displayCorrectionCW * Math.PI) / 180 : 0;
+
       const circlePoints = r => Array.from({ length: 100 }, (_, i) => {
         const angle = 2 * Math.PI * i / 100;
         return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
